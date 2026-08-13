@@ -52,46 +52,85 @@ the only thing that makes the next check cheap. Keep exactly one copy of that
 log, here, in the repo that owns the vendoring. Two copies of a review log is
 two copies of one truth, and the copy nobody updates is the one people read.
 
-## State as of 2026-08-13
+## Review log
 
-The flattened source last changed **2025-10-31**. Upstream has **26 commits**
-since. Triaged:
+### 2026-08-13 — carried three, verified bit-exact
 
-**Core — worth carrying:**
-- `4bcc4b4` Optimize Gimli for aarch64 — adds `impl/gimli-core/aarch64.h` and
-  branches to it from `impl/gimli-core.h`. Gimli is the permutation everything
-  here is built on, so this is the one with real performance meaning on Apple
-  Silicon and ARM servers. It is also the most invasive to flatten, since it
-  is a *new file* rather than an edit.
-- `cb202c9` Remove duplicate `hydro_secretbox_MACBYTES` definition — harmless
-  duplicate, trivial to carry.
+Baseline: the flattened source last changed **2025-10-31**; upstream had **26
+commits** since. Carried:
 
-**Platform RNG — one of these matters more than it looks:**
+**Core:**
+- `4bcc4b4` **Optimize Gimli for aarch64.** Upstream adds a new file,
+  `impl/gimli-core/aarch64.h`, and branches to it from `impl/gimli-core.h`. In
+  a flattened vendor there is no new file: the body goes inline as a third
+  `#elif` arm between the SSE2 and portable ones, keeping upstream's guard
+  verbatim — `#elif defined(__aarch64__) || defined(_M_ARM64)`. It must be
+  `#elif` and not a fresh `#ifdef`, or a target satisfying both guards gets
+  two `gimli_core` definitions. `#undef GIMLI_ROUND` stays inside the branch,
+  where upstream puts it. The inserted body is byte-identical to upstream's
+  file; the patch is +71/−0, a pure insertion.
+
+  **This is the permutation everything here is built on**, so a one-bit
+  difference would change every hash, ciphertext and signature — silently, and
+  only on the machines that take the new path. It was verified rather than
+  reviewed: a differential harness drove hash at 13 lengths across block
+  boundaries, an 8 KB hash, secretbox, deterministic sign and kdf through both
+  the old (portable) and new (aarch64) builds on Apple Silicon. Identical
+  output on every vector. The harness is worth keeping for the next such
+  carry.
+
+  Note the branch is **pure scalar C** — no `<arm_neon.h>`, no intrinsics.
+  That is what makes it safe for proton's in-kernel build, which could not
+  tolerate a userspace intrinsics header.
+
+- `cb202c9` **Remove duplicate `hydro_secretbox_MACBYTES`.** Upstream removed
+  the `impl/hydrogen_p.h` one; the flattened file carried both (lines 424 and
+  1796). Removed the first, after checking the macro is not used between the
+  two definitions — in a flattened file, ordering is a real constraint that
+  does not exist upstream.
+
+**Platform RNG:**
 - `44fddd3` **linux_kernel** — `get_random_bytes(&ctx.state, …)` →
-  `get_random_bytes(ctx.state, …)`. `state` is `uint8_t
-  state[gimli_BLOCKBYTES]`, so both spellings pass the same address: this is
-  type correctness, **not** a behavioural bug. Carry it, do not panic about
-  it. But note WHICH path it is in — `#if defined(__linux__) &&
-  defined(__KERNEL__)` is the in-kernel build, and that is exactly the path
-  **proton** depends on, since proton is a kernel module. The kernel RNG path
-  in this file is not a dusty embedded corner; it is load-bearing for the XDP
-  design. Watch it more closely than the rest.
-- STM32F4/STM32L4 hangs on HAL error and RNG-init failure (`f3ab14c`,
-  `dd93aa5`, `24b3f52`), RT-Thread unchecked RNG failure deterministically
-  seeding the PRG (`d00b0c5`), ESP32 init failing open without verified
-  entropy (`5eabaff`), AVR watchdog not restored (`33bce64`), Arduino
-  unconditional delay breaking the ESP32 contract (`2de57c6`), nRF52832
-  hashing more than it read (`1c23dbc`), Zephyr `rand32.h` → `random.h`
-  (`cc776d5`).
-  Several of these are real robustness bugs — an RNG that fails open, or a
-  PRG seeded deterministically on error, is serious *on those platforms*.
-  None is reachable from a desktop or server build.
+  `get_random_bytes(ctx.state, …)`. Type correctness, not a behavioural bug:
+  `state` is `uint8_t state[gimli_BLOCKBYTES]`, so both spellings pass the
+  same address. Carried because this is the `__KERNEL__` path, which is
+  exactly what **proton** builds against.
 
-**New platform, optional:**
-- `5469506` + `319313d` pico-sdk support. Only worth flattening if someone
-  wants this on a Pico.
+**Not carried, deliberately:**
+- The build-system hunks of `4bcc4b4` (CMakeLists.txt, Makefile,
+  Makefile.arduino, Makefile.particle) add the new header to source lists. A
+  single-file vendor has no source list. Nothing is lost; do not invent a
+  counterpart.
+- The remaining platform-RNG fixes — STM32F4/L4 (`f3ab14c`, `dd93aa5`,
+  `24b3f52`), RT-Thread (`d00b0c5`), ESP32 (`5eabaff`), AVR (`33bce64`),
+  Arduino (`2de57c6`), nRF52832 (`1c23dbc`), Zephyr (`cc776d5`). Several are
+  real robustness bugs on their platforms — an RNG failing open, a PRG seeded
+  deterministically on error — but none is reachable from a desktop, server or
+  kernel build, which is everything that consumes this vendor. **Still
+  outstanding.**
+- `5469506` + `319313d` pico-sdk. Only worth flattening if someone wants this
+  on a Pico. **Still outstanding.**
+- CI permissions, badges, links, copyright year, `library.properties`.
 
-**Skip:** CI permissions, badges, links, copyright year, `library.properties`.
+**Also done this pass — proton parity.** `warnings_fuck_off` gained its
+forward declaration and `(void)` parameter list here, which is what proton's
+copy already had. That symbol is a **flattening artifact, not upstream**
+(upstream has no such function), so changing it maintains the flattening
+rather than forking. `hydrogen.c` and `proton/hydrogen.c` are now
+**byte-identical**, so parity is checkable with a checksum instead of a diff
+review. Both were re-vendored into flow, which builds clean and passes its
+crypto tests.
+
+**Open decision for Glenn.** proton's `hydrogen.h` carries a `__KERNEL__`
+block — `linux/types.h`, `linux/string.h`, `linux/random.h` and the
+`uint*_t` typedefs — that hydrogen's does not. Adding it would make the
+headers byte-identical too, and there is a real argument for it: hydrogen's
+kernel branch is currently incoherent on its own, since `hydrogen.c` has the
+`__KERNEL__` branch and the `get_random_bytes` path while `hydrogen.h`
+suppresses the libc includes and supplies nothing back. But that block does
+**not exist upstream**, so adding it trades a hydrogen↔proton delta for a
+hydrogen↔upstream one, which is exactly what the vendor-not-a-fork rule
+forbids. Left alone. The clean fix is a PR to jedisct1/libhydrogen.
 
 ## Who uses this
 
