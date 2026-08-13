@@ -474,8 +474,12 @@ static TLS struct {
         hydro_hash_state st;
         uint16_t         ebits = 0;
         uint16_t         tc;
+        uint8_t          mcusr;
+        uint8_t          wdtcsr;
         bool             a, b;
 
+        mcusr  = MCUSR;
+        wdtcsr = WDTCSR;
         cli();
         MCUSR = 0;
         WDTCSR |= _BV(WDCE) | _BV(WDE);
@@ -501,9 +505,9 @@ static TLS struct {
         }
 
         cli();
-        MCUSR = 0;
+        MCUSR = mcusr;
         WDTCSR |= _BV(WDCE) | _BV(WDE);
-        WDTCSR = 0;
+        WDTCSR = wdtcsr;
         sei();
 
         hydro_hash_final(&st, hydro_random_context.state, sizeof hydro_random_context.state);
@@ -522,6 +526,7 @@ static TLS struct {
     // https://techtutorialsx.com/2017/12/22/esp32-arduino-random-number-generation/
     #ifdef ESP32
     #    include <esp_system.h>
+    #    include <bootloader_random.h>
     #endif
 
     #ifdef ARDUINO
@@ -536,14 +541,21 @@ static TLS struct {
         uint16_t         ebits = 0;
 
         hydro_hash_init(&st, ctx, NULL);
-
+    #ifdef ESP32
+        bootloader_random_enable();
+    #endif
         while (ebits < 256) {
             uint32_t r = esp_random();
 
+    #ifdef ARDUINO
             delay(10);
+    #endif
             hydro_hash_update(&st, (const uint32_t *) &r, sizeof r);
             ebits += 32;
         }
+    #ifdef ESP32
+        bootloader_random_disable();
+    #endif
 
         hydro_hash_final(&st, hydro_random_context.state, sizeof hydro_random_context.state);
         hydro_random_context.counter = ~LOAD64_LE(hydro_random_context.state);
@@ -582,7 +594,7 @@ static TLS struct {
 
 #elif defined(__ZEPHYR__)
 
-    #include <zephyr/random/rand32.h>
+    #include <zephyr/random/random.h>
 
     static int
     hydro_random_init(void)
@@ -624,7 +636,7 @@ static TLS struct {
                 if (sd_rand_application_vector_get(rand_buffer, available_bytes) != NRF_SUCCESS) {
                     return -1;
                 }
-                hydro_hash_update(&st, rand_buffer, total_bytes);
+                hydro_hash_update(&st, rand_buffer, available_bytes);
                 remaining_bytes -= available_bytes;
             }
             if (remaining_bytes <= 0) {
@@ -865,7 +877,9 @@ static TLS struct {
         SET_BIT(RNG->CR, RNG_CR_RNGEN);
     #elif defined(STM32L4)
         RngHandle.Instance = RNG;
-        HAL_RNG_Init(&RngHandle);
+        if (HAL_RNG_Init(&RngHandle) != HAL_OK) {
+            return -1;
+        }
     #endif
 
         hydro_hash_init(&st, ctx, NULL);
@@ -873,13 +887,18 @@ static TLS struct {
         while (ebits < 256) {
             uint32_t r = 0;
     #if defined(STM32F4)
+            uint32_t timeout = 0x100000U;
+
             while (!(READ_BIT(RNG->SR, RNG_SR_DRDY))) {
+                if (timeout-- == 0U) {
+                    return -1;
+                }
             }
 
             r = RNG->DR;
     #elif defined(STM32L4)
             if (HAL_RNG_GenerateRandomNumber(&RngHandle, &r) != HAL_OK) {
-                continue;
+                return -1;
             }
     #endif
             hydro_hash_update(&st, (const uint32_t *) &r, sizeof r);
@@ -921,11 +940,26 @@ static TLS struct {
         const char       ctx[hydro_hash_CONTEXTBYTES] = { 'h', 'y', 'd', 'r', 'o', 'P', 'R', 'G' };
         hydro_hash_state st;
         uint16_t         ebits = 0;
+        uint32_t         prev = 0;
+        uint8_t          have_prev = 0;
+        uint16_t         retries = 0;
 
         hydro_hash_init(&st, ctx, NULL);
 
         while (ebits < 256) {
             uint32_t r = rt_hwcrypto_rng_update();
+
+            /* Reject stuck output instead of seeding from repeated hardware RNG words. */
+            if (have_prev != 0 && r == prev) {
+                if (++retries >= 32) {
+                    return -1;
+                }
+                continue;
+            }
+            prev = r;
+            have_prev = 1;
+            retries = 0;
+
             hydro_hash_update(&st, (const uint32_t *) &r, sizeof r);
             ebits += 32;
         }

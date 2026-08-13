@@ -101,15 +101,39 @@ commits** since. Carried:
   Makefile.arduino, Makefile.particle) add the new header to source lists. A
   single-file vendor has no source list. Nothing is lost; do not invent a
   counterpart.
-- The remaining platform-RNG fixes — STM32F4/L4 (`f3ab14c`, `dd93aa5`,
-  `24b3f52`), RT-Thread (`d00b0c5`), ESP32 (`5eabaff`), AVR (`33bce64`),
-  Arduino (`2de57c6`), nRF52832 (`1c23dbc`), Zephyr (`cc776d5`). Several are
-  real robustness bugs on their platforms — an RNG failing open, a PRG seeded
-  deterministically on error — but none is reachable from a desktop, server or
-  kernel build, which is everything that consumes this vendor. **Still
-  outstanding.**
-- `5469506` + `319313d` pico-sdk. Only worth flattening if someone wants this
-  on a Pico. **Still outstanding.**
+- `5469506` + `319313d` pico-sdk. The flattening carries no pico-sdk branch at
+  all, so this is a new platform rather than a fix to an existing one. Only
+  worth adding if someone wants this on a Pico. **Still outstanding.**
+
+### 2026-08-14 — the platform RNG backlog, cleared
+
+The nine platform-RNG fixes deferred on 2026-08-13 are carried. They were
+deferred as unreachable from a desktop, server or kernel build — true, and the
+wrong reason to leave them: this flattening carries ALL platform branches, so
+a consumer on any of them inherits whatever the vendor holds, and "nobody we
+know builds for it" is exactly how a vendor rots.
+
+| commit | platform | what it fixes |
+|---|---|---|
+| `24b3f52` | STM32L4 | an RNG init failure fell through to the entropy loop, which then spun forever on an uninitialised peripheral |
+| `dd93aa5` | STM32F4 | the data-ready busy-wait had no timeout, so a stalled peripheral hung the caller |
+| `f3ab14c` | STM32L4 | `continue` on a HAL error retried forever without advancing the entropy count |
+| `d00b0c5` | RT-Thread | a stuck hardware RNG returning one word forever seeded the PRG deterministically, silently |
+| `5eabaff` | ESP32 | `esp_random()` without `bootloader_random_enable()` is a PRNG never seeded from entropy — init failed OPEN |
+| `2de57c6` | ESP32/Arduino | an unconditional `delay(10)` broke the plain-ESP32 contract, where `delay` is Arduino's |
+| `1c23dbc` | nRF52832 | hashed `total_bytes` when only `available_bytes` had been read — hashing uninitialised buffer |
+| `33bce64` | AVR | cleared the watchdog registers to zero instead of restoring them, so a sketch relying on the watchdog lost it |
+| `cc776d5` | Zephyr | `zephyr/random/rand32.h` was removed upstream in 2024; the header is `random.h` |
+
+Three of these are fail-open or hang bugs in an RNG, which is the worst place
+to have one. None touches the desktop, server or kernel paths: the differential
+harness (`gimli_diff.c`) produces identical output before and after, which is
+what says so rather than inspection.
+
+**Also filed upstream:** jedisct1/libhydrogen#165 — upstream's own `__KERNEL__`
+branch suppresses `<stdint.h>` and supplies nothing back, so an in-kernel build
+fails on the first `uint32_t` it declares. proton has carried those lines
+locally to build at all; the PR offers them back so the divergence can end.
 - CI permissions, badges, links, copyright year, `library.properties`.
 
 **Also done this pass — proton parity.** `warnings_fuck_off` gained its
