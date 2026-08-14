@@ -156,6 +156,32 @@ suppresses the libc includes and supplies nothing back. But that block does
 hydrogen↔upstream one, which is exactly what the vendor-not-a-fork rule
 forbids. Left alone. The clean fix is a PR to jedisct1/libhydrogen.
 
+**Resolved 2026-08-15 — upstream answered.** jedisct1/libhydrogen#165 was fixed
+upstream in `617036a` (2026-08-14, credits @gafferongames), and the fix is
+carried in the entry below. The decision is moot: the block now exists
+upstream, so carrying it is tracking, not forking. Upstream's form has no
+typedefs — `linux/types.h` supplies `uint8_t` through `uint64_t` itself
+(lines 109–114 of the kernel header) — so proton's typedef lines are
+redundant and its header can re-vendor down to byte parity.
+
+### 2026-08-15 — upstream answered #165: the kernel headers, carried
+
+Baseline: one upstream commit since the 2026-08-14 pass.
+
+**Core (the `__KERNEL__` build):**
+- `617036a` **Include required header files for linux `__KERNEL__` builds.**
+  The exact fix this repo's own log asked upstream for: the guard at the top
+  of `hydrogen.h` suppressed `<stdint.h>`/`<stdlib.h>`/`<stdbool.h>` for
+  in-kernel builds and supplied nothing back. Upstream adds an `#else` arm —
+  `linux/random.h`, `linux/string.h`, `linux/types.h` — and `linux/types.h`
+  provides the `uint*_t` typedefs, so nothing else is needed. Carried
+  byte-identical (the inserted block diffs empty against upstream's).
+  Verified: the userspace branch is untouched by construction (the new lines
+  live entirely in the `#else` arm) and `clang -c hydrogen.c -Wall -Wextra`
+  is clean on this bench. The kernel branch itself is not compile-testable
+  here (macOS); proton's build is the real test and its re-vendor is the
+  follow-up.
+
 ## Who uses this
 
 The flattened file is vendored into the private **flow** networking library as
